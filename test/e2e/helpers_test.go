@@ -104,7 +104,9 @@ func waitForSTSReadiness(t *testing.T, c *envconf.Config, name string, expectedR
 	t.Helper()
 	var sts appsv1.StatefulSet
 	err := wait.For(func(ctx context.Context) (done bool, err error) {
-		if err := c.Client().Resources().Get(ctx, name, namespace, &sts); err != nil {
+		timeOutContext, cancelCtx := context.WithTimeout(ctx, time.Minute * 1)
+		defer cancelCtx()
+		if err := c.Client().Resources().Get(timeOutContext, name, namespace, &sts); err != nil {
 			return false, err
 		}
 
