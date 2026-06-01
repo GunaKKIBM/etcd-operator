@@ -23,6 +23,7 @@ import (
 	"time"
 
 	certv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+	//"sigs.k8s.io/controller-runtime/pkg/cache"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -36,6 +37,7 @@ import (
 	"go.etcd.io/etcd-operator/internal/etcdutils"
 	etcdversions "go.etcd.io/etcd/api/v3/version"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 )
 
 const (
@@ -402,7 +404,8 @@ func (r *EtcdClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&ecv1alpha1.EtcdCluster{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
-		Owns(&corev1.ConfigMap{})
+		Owns(&corev1.ConfigMap{}).
+		Watches(&appsv1.StatefulSet{}, &handler.EnqueueRequestForObject{})
 
 	// Conditionally watch cert-manager Certificate resources if CRDs are installed
 	// This allows the controller to react to Certificate status changes when using cert-manager provider

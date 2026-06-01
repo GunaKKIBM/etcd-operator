@@ -27,6 +27,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -35,6 +36,8 @@ import (
 
 	operatorv1alpha1 "go.etcd.io/etcd-operator/api/v1alpha1"
 	"go.etcd.io/etcd-operator/internal/controller"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
 	// nolint:gci
 	// +kubebuilder:scaffold:imports
 )
@@ -126,6 +129,12 @@ func main() {
 		// this setup is not recommended for production.
 	}
 
+	//config := make(map[string]cache.Config)
+	fileRequirement, _ := labels.NewRequirement("app-test", selection.In, []string{"sts-check"}) // #nosec G104: no rules are violated w.r.t selector
+	labelSelector := labels.NewSelector()
+	labelSelector = labelSelector.Add(*fileRequirement)
+	//config["kube-system"] = cache.Config{LabelSelector: labelSelector}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
@@ -133,6 +142,10 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "cc4a0f4b.etcd.io",
+		PprofBindAddress:       ":8082",
+		Cache: cache.Options{
+			DefaultLabelSelector: labelSelector,
+		},
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -159,6 +172,15 @@ func main() {
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
+
+	if err := mgr.Add(&controller.CacheDebugger{
+		Client: mgr.GetClient(),
+		Cache:  mgr.GetCache(),
+		Log:    ctrl.Log.WithName("debug"),
+	}); err != nil {
+		setupLog.Error(err, "unable to add cache debugger")
+		os.Exit(1)
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
