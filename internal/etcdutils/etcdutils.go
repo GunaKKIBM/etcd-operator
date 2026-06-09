@@ -153,6 +153,7 @@ func ClusterHealth(eps []string) ([]EpHealth, error) {
 				healthCh <- EpHealth{Ep: ep, Health: false, Error: err.Error()}
 				return
 			}
+			//defer cli.Close()
 			startTs := time.Now()
 			// get a random key. As long as we can get the response
 			// without an error, the endpoint is health.

@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -36,19 +37,31 @@ func (d *CacheDebugger) Start(ctx context.Context) error {
 			logger.Info("cache debugger stopped")
 			return nil
 		case <-ticker.C:
+			// List StatefulSets
 			stsList := &appsv1.StatefulSetList{}
 			if err := d.Client.List(ctx, stsList); err != nil {
 				logger.Error(err, "failed to list cached StatefulSets")
-				continue
+			} else {
+				stsNames := make([]string, 0, len(stsList.Items))
+				for _, sts := range stsList.Items {
+					stsNames = append(stsNames, sts.Namespace+"/"+sts.Name)
+				}
+				sort.Strings(stsNames)
+				logger.Info("cached StatefulSets snapshot", "count", len(stsNames), "items", stsNames)
 			}
 
-			names := make([]string, 0, len(stsList.Items))
-			for _, sts := range stsList.Items {
-				names = append(names, sts.Namespace+"/"+sts.Name)
+			// List Pods
+			podList := &corev1.PodList{}
+			if err := d.Client.List(ctx, podList); err != nil {
+				logger.Error(err, "failed to list cached Pods")
+			} else {
+				podNames := make([]string, 0, len(podList.Items))
+				for _, pod := range podList.Items {
+					podNames = append(podNames, pod.Namespace+"/"+pod.Name)
+				}
+				sort.Strings(podNames)
+				logger.Info("cached Pods snapshot", "count", len(podNames), "items", podNames)
 			}
-			sort.Strings(names)
-
-			logger.Info("cached StatefulSets snapshot", "count", len(names), "items", names)
 		}
 	}
 }

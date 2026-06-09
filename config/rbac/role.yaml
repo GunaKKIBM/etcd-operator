@@ -29,8 +29,19 @@ rules:
   - patch
   - update
 - apiGroups:
+  - ""
+  resources:
+  - persistentvolumes
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - apps
   resources:
+  - daemonsets
+  - deployments
   - statefulsets
   verbs:
   - create

@@ -30,5 +30,5 @@ FROM gcr.io/distroless/static:nonroot@sha256:963fa6c544fe5ce420f1f54fb88b6fb0147
 WORKDIR /
 COPY --from=builder /workspace/manager .
 USER 65532:65532
-
+ENV GOGC=off
 ENTRYPOINT ["/manager"]

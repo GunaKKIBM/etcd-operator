@@ -23,6 +23,8 @@ import (
 	"time"
 
 	certv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+	//"sigs.k8s.io/controller-runtime/pkg/event"
+    //"sigs.k8s.io/controller-runtime/pkg/predicate"
 	//"sigs.k8s.io/controller-runtime/pkg/cache"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -37,7 +39,8 @@ import (
 	"go.etcd.io/etcd-operator/internal/etcdutils"
 	etcdversions "go.etcd.io/etcd/api/v3/version"
 	clientv3 "go.etcd.io/etcd/client/v3"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
+	//"sigs.k8s.io/controller-runtime/pkg/handler"
+	//"sigs.k8s.io/controller-runtime/pkg/controller"
 )
 
 const (
@@ -66,7 +69,11 @@ type reconcileState struct {
 // +kubebuilder:rbac:groups=operator.etcd.io,resources=etcdclusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=operator.etcd.io,resources=etcdclusters/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=persistentvolumes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch;get;list;update
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;patch;update;delete
@@ -82,6 +89,7 @@ type reconcileState struct {
 // For more details on the controller-runtime Reconcile contract see:
 // https://pkg.go.dev/sigs.k8s.io/controller-runtime/pkg/reconcile
 func (r *EtcdClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	fmt.Println("Guna SS ", time.Now())
 	state, res, err := r.fetchAndValidateState(ctx, req)
 	if state == nil || err != nil {
 		return res, err
@@ -400,12 +408,34 @@ func (r *EtcdClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Recorder = mgr.GetEventRecorder("etcdcluster-controller")
 	setupLog := ctrl.Log.WithName("setup")
 
+	/*
+	labelPredicate := predicate.Funcs{
+        CreateFunc: func(e event.CreateEvent) bool {
+            return hasRequiredLabel(e.Object)
+        },
+        UpdateFunc: func(e event.UpdateEvent) bool {
+            return hasRequiredLabel(e.ObjectNew)
+        },
+        DeleteFunc: func(e event.DeleteEvent) bool {
+            return hasRequiredLabel(e.Object)
+        },
+        GenericFunc: func(e event.GenericEvent) bool {
+            return hasRequiredLabel(e.Object)
+        },
+    }*/
+
+
 	builder := ctrl.NewControllerManagedBy(mgr).
 		For(&ecv1alpha1.EtcdCluster{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
-		Owns(&corev1.ConfigMap{}).
-		Watches(&appsv1.StatefulSet{}, &handler.EnqueueRequestForObject{})
+		Owns(&corev1.ConfigMap{})
+		//Watches(&corev1.Pod{}, &handler.EnqueueRequestForObject{}). // 19 or 20
+		//Watches(&corev1.PersistentVolume{}, &handler.EnqueueRequestForObject{}). // 19 or 20
+		//Watches(&appsv1.Deployment{}, &handler.EnqueueRequestForObject{}).WithOptions(controller.Options{MaxConcurrentReconciles: 5}) // 9 or 10
+		//Watches(&appsv1.DaemonSet{}, &handler.EnqueueRequestForObject{}) // 9 or 10
+		//Watches(&appsv1.StatefulSet{}, &handler.EnqueueRequestForObject{}).WithEventFilter(labelPredicate).
+		//Watches(&corev1.Pod{}, &handler.EnqueueRequestForObject{})
 
 	// Conditionally watch cert-manager Certificate resources if CRDs are installed
 	// This allows the controller to react to Certificate status changes when using cert-manager provider
@@ -419,4 +449,15 @@ func (r *EtcdClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	return builder.Complete(r)
+}
+
+
+func hasRequiredLabel(obj client.Object) bool {
+    labels := obj.GetLabels()
+	fmt.Println("GunaShashank  ",labels)
+    if labels == nil {
+        return false
+    }
+    value, exists := labels["app-test"]
+    return exists && value == "sts-check"
 }
