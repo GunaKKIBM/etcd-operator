@@ -20,6 +20,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -80,7 +81,8 @@ func (r *EtcdClusterReconciler) reconcileEtcdMember(
 		return r.cleanupEtcdMember(ctx, state, member)
 	case ecv1alpha1.EtcdMemberReplacing:
 		return r.replaceEtcdMember(ctx, state, member)
-	// placeholder for Recreating
+	case ecv1alpha1.EtcdMemberRecreating:
+		return r.reconcileRecreating(ctx, state, member)
 	default:
 		return ctrl.Result{}, nil
 	}
@@ -372,6 +374,136 @@ func (r *EtcdClusterReconciler) reconcileProvisioning(
 		status.Phase = ecv1alpha1.EtcdMemberReady
 		status.RecreateCount = 0
 	}); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{RequeueAfter: requeueDuration}, nil
+}
+
+// podStartTimeout is the maximum time a Pod is allowed to be running but not
+// Ready before the reconciler treats it as timed out and replaces it.
+const podStartTimeout = 2 * time.Minute
+
+// reconcileRecreating drives the Recreating lifecycle phase for a member whose
+// Pod needs to be recreated (e.g. after an upgrade or self-healing). It follows
+// the Recreating case in reconcile_member_v0.3.0.png
+func (r *EtcdClusterReconciler) reconcileRecreating(
+	ctx context.Context,
+	state *reconcileState,
+	member *ecv1alpha1.EtcdMember,
+) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	// 1. Member health check.
+	health, err := findHealthStatusForEtcdMember(state, member)
+	if err != nil {
+		// Health data unavailable (e.g. member list empty mid-upgrade) — requeue.
+		logger.Info("[Recreating] health status unavailable, requeueing", "member", member.Name, "error", err)
+		return ctrl.Result{RequeueAfter: requeueDuration}, nil
+	}
+
+	memberPod := findPodForEtcdMember(state, member)
+	onTargetVersion := false
+	if memberPod != nil {
+		expectedImage := fmt.Sprintf("%s:%s", state.cluster.Spec.ImageRegistry, member.Spec.Version)
+		for _, c := range memberPod.Spec.Containers {
+			if c.Name == "etcd" && c.Image == expectedImage {
+				onTargetVersion = true
+				break
+			}
+		}
+	}
+
+	// 2. Member is healthy — but only mark Ready if the pod is already running
+	// the target version.
+	if health.Health {
+		if onTargetVersion {
+			logger.Info("[Recreating] member is healthy on target version, marking Ready", "member", member.Name)
+			if err := r.updateEtcdMemberStatus(ctx, member, func(status *ecv1alpha1.EtcdMemberStatus) {
+				status.Phase = ecv1alpha1.EtcdMemberReady
+				status.RecreateCount = 0
+			}); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{RequeueAfter: requeueDuration}, nil
+		}
+		// Pod is healthy but still on old image — fall through to replace it.
+		logger.Info("[Recreating] member is healthy but on old image, will replace pod",
+			"member", member.Name,
+		)
+	}
+
+	// 3. Member is unhealthy on target version, check if the pod has timed out
+	// If the pod hasn't timed out, requeue
+	if memberPod != nil && onTargetVersion {
+		timedOut := memberPod.Status.StartTime != nil &&
+			time.Since(memberPod.Status.StartTime.Time) > podStartTimeout
+		if !timedOut {
+			// Pod is still starting up — give it more time.
+			logger.Info("[Recreating] pod not yet timed out, requeueing", "member", member.Name, "pod", memberPod.Name)
+			return ctrl.Result{RequeueAfter: requeueDuration}, nil
+		}
+		// Pod has timed out — fall through to delete + recreate below.
+		logger.Info("[Recreating] pod timed out", "member", member.Name, "pod", memberPod.Name)
+	}
+
+	// 4. Escalate to Replacing if RecreateCount is exhausted.
+	if member.Status.RecreateCount >= 3 {
+		logger.Info("[Recreating] RecreateCount exhausted, escalating to Replacing", "member", member.Name, "recreateCount", member.Status.RecreateCount)
+		if err := r.updateEtcdMemberStatus(ctx, member, func(status *ecv1alpha1.EtcdMemberStatus) {
+			status.Phase = ecv1alpha1.EtcdMemberReplacing
+			status.RecreateCount = 0
+		}); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: requeueDuration}, nil
+	}
+
+	// 5. Transfer leadership away before taking this member offline, so the
+	// cluster doesn't lose its leader unnecessarily. This is a best-effort
+	// operation — if it fails, log and proceed with the pod deletion anyway.
+	if member.Status.IsLeader {
+		endpoints := clientEndpointsFromPods(state.cluster.Name, state.cluster.Namespace, state.pods, clusterTLSEnabled(state.cluster))
+		if len(endpoints) > 0 {
+			// Pick the lowest-ordinal member that is not this one as the transfer target.
+			var transferTargetID uint64
+			for i := range state.members {
+				other := &state.members[i]
+				if other.Name == member.Name {
+					continue
+				}
+				if node := findEtcdNodeForEtcdMember(state, other); node != nil {
+					transferTargetID = node.ID
+					break
+				}
+			}
+			if transferTargetID != 0 {
+				logger.Info("[Recreating] transferring leadership before pod deletion",
+					"member", member.Name,
+					"transferTargetID", fmt.Sprintf("%x", transferTargetID),
+				)
+				if err := etcdutils.MoveLeader(etcdutils.ClientConfig{Endpoints: endpoints, TLS: state.tlsConfig}, transferTargetID); err != nil {
+					logger.Info("[Recreating] leader transfer failed, proceeding with pod deletion anyway",
+						"member", member.Name,
+						"error", err,
+					)
+				}
+			}
+		}
+	}
+
+	// 6. Delete the timed-out Pod or pod with old version of image, if it still exists.
+	if memberPod != nil {
+		logger.Info("[Recreating] deleting timed-out pod", "member", member.Name, "pod", memberPod.Name)
+		if err := r.Delete(ctx, memberPod); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: requeueDuration}, nil
+	}
+
+	// 7. Pod is absent — create a new one with the current spec and bump RecreateCount.
+	logger.Info("[Recreating] creating new pod", "member", member.Name)
+	if err := r.createPodForEtcdMember(ctx, state, member, false); err != nil {
 		return ctrl.Result{}, err
 	}
 
